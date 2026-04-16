@@ -238,6 +238,44 @@
             background: var(--primary);
         }
 
+        .port-label {
+            position: absolute;
+            font-size: 9px;
+            font-weight: 600;
+            background: var(--surface);
+            padding: 2px 4px;
+            border-radius: 3px;
+            border: 0.5px solid var(--border);
+            white-space: nowrap;
+            pointer-events: none;
+            transform: translate(-50%, -100%);
+            margin-top: -4px;
+        }
+
+        .port.wan {
+            background: #EF9F27;
+        }
+
+        .port.wan.connected {
+            background: #BA7517;
+        }
+
+        .port.fiber {
+            background: #D4537E;
+        }
+
+        .port.fiber.connected {
+            background: #993556;
+        }
+
+        .port.usb {
+            background: #7F77DD;
+        }
+
+        .port.usb.connected {
+            background: #534AB7;
+        }
+
         svg.connections {
             position: absolute;
             top: 0;
@@ -266,6 +304,7 @@
             display: flex;
             gap: 8px;
             box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            align-items: center;
         }
 
         .toolbar button {
@@ -281,6 +320,21 @@
         .toolbar button:hover {
             background: var(--primary-light);
             border-color: var(--primary);
+        }
+
+        .zoom-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding-left: 8px;
+            border-left: 1px solid var(--border);
+        }
+
+        .zoom-display {
+            font-size: 13px;
+            font-weight: 500;
+            min-width: 45px;
+            text-align: center;
         }
 
         .modal {
@@ -535,6 +589,12 @@
                 <button onclick="clearCanvas()">🗑️ Wissen</button>
                 <button onclick="exportImage()">💾 Opslaan</button>
                 <button onclick="exportJSON()">📄 Export</button>
+                <div class="zoom-controls">
+                    <button onclick="zoomOut()">−</button>
+                    <span class="zoom-display" id="zoomDisplay">100%</span>
+                    <button onclick="zoomIn()">+</button>
+                    <button onclick="resetZoom()">↻</button>
+                </div>
             </div>
         </div>
     </div>
@@ -594,6 +654,34 @@
         </div>
     </div>
 
+    <div class="modal" id="portModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Poort Configureren</h2>
+                <p>Stel het type poort in</p>
+            </div>
+            <div class="form-group">
+                <label>Poort Label</label>
+                <input type="text" id="portLabel" placeholder="Bijv. LAN1, WAN, Uplink">
+            </div>
+            <div class="form-group">
+                <label>Poort Type</label>
+                <select id="portType">
+                    <option value="lan">LAN (Ethernet)</option>
+                    <option value="wan">WAN (Internet)</option>
+                    <option value="fiber">Glasvezel</option>
+                    <option value="usb">USB</option>
+                    <option value="power">Power/PoE</option>
+                    <option value="uplink">Uplink</option>
+                </select>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closePortModal()">Annuleren</button>
+                <button class="btn btn-primary" onclick="savePortConfig()">Opslaan</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         const deviceIcons = {
             'router': '🌐',
@@ -639,6 +727,8 @@
         let connectingFrom = null;
         let draggedElement = null;
         let deviceCounter = 0;
+        let zoomLevel = 1;
+        let selectedPort = null;
 
         document.querySelectorAll('.device-item').forEach(item => {
             item.addEventListener('dragstart', e => {
@@ -671,8 +761,16 @@
                 name: deviceLabels[type] + ' ' + deviceCounter,
                 ports: 4,
                 connectionType: 'ethernet',
-                notes: ''
+                notes: '',
+                portConfigs: []
             };
+            
+            for (let i = 0; i < device.ports; i++) {
+                device.portConfigs.push({
+                    label: (i + 1).toString(),
+                    type: 'lan'
+                });
+            }
             
             devices.push(device);
             renderDevice(device);
@@ -746,9 +844,20 @@
             const portPositions = [];
             const portCount = device.ports;
             
+            if (!device.portConfigs || device.portConfigs.length !== portCount) {
+                device.portConfigs = [];
+                for (let i = 0; i < portCount; i++) {
+                    device.portConfigs.push({
+                        label: (i + 1).toString(),
+                        type: 'lan'
+                    });
+                }
+            }
+            
             for (let i = 0; i < portCount; i++) {
                 const port = document.createElement('div');
-                port.className = 'port';
+                const config = device.portConfigs[i];
+                port.className = 'port ' + config.type;
                 port.dataset.deviceId = device.id;
                 port.dataset.portIndex = i;
                 
@@ -760,9 +869,19 @@
                 port.style.left = portX + 'px';
                 port.style.top = portY + 'px';
                 
+                const label = document.createElement('div');
+                label.className = 'port-label';
+                label.textContent = config.label;
+                port.appendChild(label);
+                
                 port.addEventListener('click', e => {
                     e.stopPropagation();
                     handlePortClick(device.id, i, port);
+                });
+                
+                port.addEventListener('dblclick', e => {
+                    e.stopPropagation();
+                    editPort(device.id, i);
                 });
                 
                 container.appendChild(port);
@@ -771,27 +890,76 @@
 
         function handlePortClick(deviceId, portIndex, portElement) {
             if (!connectingFrom) {
-                connectingFrom = { deviceId, portIndex, element: portElement };
-                portElement.style.background = '#EF9F27';
+                connectingFrom = { 
+                    deviceId, 
+                    portIndex, 
+                    element: portElement,
+                    x: parseFloat(portElement.style.left),
+                    y: parseFloat(portElement.style.top)
+                };
+                portElement.style.outline = '2px solid #EF9F27';
             } else {
                 if (connectingFrom.deviceId !== deviceId) {
                     addConnection(
                         connectingFrom.deviceId,
                         connectingFrom.portIndex,
                         deviceId,
-                        portIndex
+                        portIndex,
+                        { x: parseFloat(portElement.style.left), y: parseFloat(portElement.style.top) }
                     );
                     connectingFrom.element.classList.add('connected');
                     portElement.classList.add('connected');
                 }
-                connectingFrom.element.style.background = '';
+                connectingFrom.element.style.outline = '';
                 connectingFrom = null;
             }
         }
 
-        function addConnection(fromDevice, fromPort, toDevice, toPort) {
-            connections.push({ fromDevice, fromPort, toDevice, toPort });
+        function addConnection(fromDevice, fromPort, toDevice, toPort, toPortPos) {
+            connections.push({ 
+                fromDevice, 
+                fromPort, 
+                toDevice, 
+                toPort
+            });
             updateConnections();
+        }
+
+        function editPort(deviceId, portIndex) {
+            const device = devices.find(d => d.id === deviceId);
+            if (!device || !device.portConfigs[portIndex]) return;
+            
+            const config = device.portConfigs[portIndex];
+            document.getElementById('portLabel').value = config.label;
+            document.getElementById('portType').value = config.type;
+            
+            selectedPort = { deviceId, portIndex };
+            document.getElementById('portModal').classList.add('active');
+        }
+
+        function savePortConfig() {
+            if (!selectedPort) return;
+            
+            const device = devices.find(d => d.id === selectedPort.deviceId);
+            if (!device) return;
+            
+            const config = device.portConfigs[selectedPort.portIndex];
+            config.label = document.getElementById('portLabel').value;
+            config.type = document.getElementById('portType').value;
+            
+            const deviceEl = document.getElementById('device-' + selectedPort.deviceId);
+            if (deviceEl) {
+                deviceEl.querySelectorAll('.port').forEach(p => p.remove());
+                renderPorts(device, deviceEl);
+            }
+            
+            closePortModal();
+            updateConnections();
+        }
+
+        function closePortModal() {
+            document.getElementById('portModal').classList.remove('active');
+            selectedPort = null;
         }
 
         function updateConnections() {
@@ -809,14 +977,22 @@
                 
                 if (!fromEl || !toEl) return;
                 
-                const fromRect = fromEl.getBoundingClientRect();
-                const toRect = toEl.getBoundingClientRect();
+                const fromPorts = fromEl.querySelectorAll('.port');
+                const toPorts = toEl.querySelectorAll('.port');
+                
+                const fromPort = fromPorts[conn.fromPort];
+                const toPort = toPorts[conn.toPort];
+                
+                if (!fromPort || !toPort) return;
+                
+                const fromPortRect = fromPort.getBoundingClientRect();
+                const toPortRect = toPort.getBoundingClientRect();
                 const canvasRect = canvas.getBoundingClientRect();
                 
-                const x1 = fromRect.left + fromRect.width / 2 - canvasRect.left + canvas.parentElement.scrollLeft;
-                const y1 = fromRect.top + fromRect.height / 2 - canvasRect.top + canvas.parentElement.scrollTop;
-                const x2 = toRect.left + toRect.width / 2 - canvasRect.left + canvas.parentElement.scrollLeft;
-                const y2 = toRect.top + toRect.height / 2 - canvasRect.top + canvas.parentElement.scrollTop;
+                const x1 = (fromPortRect.left + fromPortRect.width / 2 - canvasRect.left) / zoomLevel;
+                const y1 = (fromPortRect.top + fromPortRect.height / 2 - canvasRect.top) / zoomLevel;
+                const x2 = (toPortRect.left + toPortRect.width / 2 - canvasRect.left) / zoomLevel;
+                const y2 = (toPortRect.top + toPortRect.height / 2 - canvasRect.top) / zoomLevel;
                 
                 const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
                 const d = `M ${x1} ${y1} L ${x2} ${y2}`;
@@ -854,9 +1030,26 @@
             
             device.name = document.getElementById('deviceName').value;
             const newPorts = parseInt(document.getElementById('devicePorts').value);
+            const oldPorts = device.ports;
             device.ports = newPorts;
             device.connectionType = document.getElementById('connectionType').value;
             device.notes = document.getElementById('deviceNotes').value;
+            
+            if (newPorts > oldPorts) {
+                for (let i = oldPorts; i < newPorts; i++) {
+                    device.portConfigs.push({
+                        label: (i + 1).toString(),
+                        type: 'lan'
+                    });
+                }
+            } else if (newPorts < oldPorts) {
+                device.portConfigs = device.portConfigs.slice(0, newPorts);
+                connections = connections.filter(c => {
+                    if (c.fromDevice === device.id && c.fromPort >= newPorts) return false;
+                    if (c.toDevice === device.id && c.toPort >= newPorts) return false;
+                    return true;
+                });
+            }
             
             const deviceEl = document.getElementById('device-' + selectedDevice);
             if (deviceEl) {
@@ -867,6 +1060,7 @@
                 renderPorts(device, deviceEl);
             }
             
+            updateConnections();
             closeDeviceModal();
         }
 
@@ -903,6 +1097,40 @@
 
         function saveSettings() {
             closeSettings();
+        }
+
+        function zoomIn() {
+            if (zoomLevel < 2) {
+                zoomLevel += 0.1;
+                applyZoom();
+            }
+        }
+
+        function zoomOut() {
+            if (zoomLevel > 0.3) {
+                zoomLevel -= 0.1;
+                applyZoom();
+            }
+        }
+
+        function resetZoom() {
+            zoomLevel = 1;
+            applyZoom();
+        }
+
+        function applyZoom() {
+            canvas.style.transform = `scale(${zoomLevel})`;
+            canvas.style.transformOrigin = 'top left';
+            const zoomPercent = Math.round(zoomLevel * 100);
+            document.getElementById('zoomDisplay').textContent = zoomPercent + '%';
+            
+            const container = canvas.parentElement;
+            const width = container.offsetWidth / zoomLevel;
+            const height = container.offsetHeight / zoomLevel;
+            canvas.style.width = width + 'px';
+            canvas.style.height = height + 'px';
+            
+            updateConnections();
         }
 
         function exportJSON() {
